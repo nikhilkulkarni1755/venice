@@ -9,13 +9,17 @@ export async function logAgentRun(agent: string, step: string): Promise<void> {
     console.log(line);
     return;
   }
+  // Hosted Omnara API (api.omnara.com, /v1). Best-effort: a read-scoped org key
+  // will 403 on writes, so we always console.log too and never block the agent.
+  console.log(line);
+  const base = process.env.OMNARA_BASE_URL || "https://api.omnara.com";
   try {
-    await fetch("https://agent.omnara.com/api/v1/messages/agent", {
+    await fetch(`${base}/v1/messages/agent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({ agent_type: "footfall-ai", content: line, requires_user_input: false }),
     });
   } catch {
-    console.log(line);
+    /* non-fatal */
   }
 }
