@@ -24,9 +24,11 @@ assets to fix it: posters, Google Business copy, a deployable website, TikToks.
 - `lib/omnara.ts` — agent-run logging/monitoring.
 - `lib/ingest.ts` — bakery profile (Firecrawl optional + generated fallback).
 - `lib/print.ts` — print-ready color PDF of the poster (pdf-lib) + print-order
-  email draft. `context.findPrinters()` (Answers API) locates nearby print shops
-  with contacts; `app/api/print` orchestrates. Note: USPS has no store emails /
-  emailed print jobs, so we target real print shops (chains + independents).
+  email draft. `context.findFedExOffice()` (Answers API) locates the nearest
+  FedEx Office and derives its store email `usaNNNN@fedex.com`; `app/api/print`
+  orchestrates. We standardized on FedEx Office: empirically the only chain whose
+  per-store email is reliably published AND derivable from the office number
+  (office-4095 -> usa4095@fedex.com). USPS has no store emails / emailed jobs.
 
 ## Conventions
 - API keys are server-only. Never import a key into a client component.

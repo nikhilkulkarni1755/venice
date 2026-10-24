@@ -46,10 +46,10 @@ export function PrintPanel({ bakeryId }: { bakeryId: string }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="font-display text-2xl text-crust">Print &amp; distribute</h2>
-          <p className="text-sm text-crust/55">Find the nearest print shop and send a color print order for your poster.</p>
+          <p className="text-sm text-crust/55">Find the nearest FedEx Office and send a color print order for your poster.</p>
         </div>
         <button className="btn-primary" onClick={prepare} disabled={loading}>
-          {loading ? "Finding shops…" : job ? "Refresh" : "Find print shops →"}
+          {loading ? "Locating store…" : job ? "Refresh" : "Find FedEx Office →"}
         </button>
       </div>
 

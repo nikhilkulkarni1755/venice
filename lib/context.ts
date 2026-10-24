@@ -113,19 +113,34 @@ export async function brandStyle(
   }
 }
 
-// Find nearby print shops that can run a color poster job, with contact info.
-// Uses Context.dev Answers (live web research in a structured shape).
+// Find the nearest FedEx Office to an address and derive its store email.
+// We standardized on FedEx Office: empirically it's the only chain whose
+// per-store email is both published on every location page AND deterministically
+// derivable from the office number in the URL (office-4095 -> usa4095@fedex.com),
+// so there's zero guessing about the recipient.
 export type PrintShop = { name: string; address: string; email?: string; phone?: string; website?: string; distance?: string };
-export async function findPrinters(address: string): Promise<PrintShop[]> {
+export async function findFedExOffice(address: string): Promise<PrintShop[]> {
   if (!hasContext()) return [];
   try {
     const r = await answers(
-      `Find 4 print shops near "${address}" that offer color printing/poster printing. Include national chains (FedEx Office, The UPS Store, Staples, Office Depot) and independent local print shops. For each, give the business name, full street address, a contact email if one is published, phone, and website. Order by closeness to the address.`,
-      { shops: [{ name: "", address: "", email: "", phone: "", website: "", distance: "" }] },
+      `Find the single nearest FedEx Office Print & Ship Center to "${address}". Return its office/store number, full street address, phone number, and its local.fedex.com location page URL (format: local.fedex.com/en-us/<state>/<city>/office-NNNN).`,
+      { officeNumber: "", address: "", phone: "", url: "" },
       "fast"
     );
-    const out = (r?.json_content?.shops || r?.answer?.shops || r?.shops || []) as PrintShop[];
-    return Array.isArray(out) ? out.filter((s) => s && s.name).slice(0, 4) : [];
+    const j = r?.json_content || {};
+    let num = String(j.officeNumber || "").match(/\d+/)?.[0];
+    if (!num && j.url) num = String(j.url).match(/office-(\d+)/i)?.[1];
+    if (!num) return [];
+    const padded = num.padStart(4, "0"); // FedEx store emails are 4-digit: usa0289@fedex.com
+    return [
+      {
+        name: `FedEx Office #${padded}`,
+        address: j.address || "",
+        email: `usa${padded}@fedex.com`, // confirmed scrapable pattern
+        phone: j.phone || "",
+        website: j.url || "https://local.fedex.com",
+      },
+    ];
   } catch {
     return [];
   }
