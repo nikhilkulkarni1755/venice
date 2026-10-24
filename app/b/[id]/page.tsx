@@ -5,6 +5,7 @@ import type { Bakery, Analysis, GeneratedAsset, Recommendation } from "@/lib/typ
 import { PopularTimesChart, SalesChart } from "@/components/Charts";
 import { computeKpis } from "@/components/kpis";
 import { AssetCard } from "@/components/AssetCard";
+import { PrintPanel } from "@/components/PrintPanel";
 
 const TYPE_LABEL: Record<string, string> = {
   poster: "Poster",
@@ -164,6 +165,9 @@ export default function Dashboard({ params }: { params: Promise<{ id: string }> 
           ))}
         </section>
       )}
+
+      {/* Print & distribute */}
+      {analysis && <PrintPanel bakeryId={id} />}
 
       {/* Generated assets */}
       {assets.length > 0 && (

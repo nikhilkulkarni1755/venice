@@ -56,11 +56,12 @@ export async function search(query: string, opts: Record<string, unknown> = {}) 
   return call<any>("/web/search", { method: "POST", body: JSON.stringify({ query, ...opts }) });
 }
 
-// Research a question and get back JSON in the shape you specify.
-export async function answers(task: string, jsonSchema: Record<string, unknown>, mode: "fast" | "ultra" = "fast") {
+// Research a question and get back JSON shaped like `jsonFormat` (an EXAMPLE
+// object, not a JSON Schema — that's what the API expects).
+export async function answers(task: string, jsonFormat: Record<string, unknown>, mode: "fast" | "ultra" = "fast") {
   return call<any>("/web/answers", {
     method: "POST",
-    body: JSON.stringify({ mode, task, responseSchema: jsonSchema }),
+    body: JSON.stringify({ mode, task, json_format: jsonFormat }),
   });
 }
 
@@ -109,6 +110,24 @@ export async function brandStyle(
     return { palette, font, domain };
   } catch {
     return {};
+  }
+}
+
+// Find nearby print shops that can run a color poster job, with contact info.
+// Uses Context.dev Answers (live web research in a structured shape).
+export type PrintShop = { name: string; address: string; email?: string; phone?: string; website?: string; distance?: string };
+export async function findPrinters(address: string): Promise<PrintShop[]> {
+  if (!hasContext()) return [];
+  try {
+    const r = await answers(
+      `Find 4 print shops near "${address}" that offer color printing/poster printing. Include national chains (FedEx Office, The UPS Store, Staples, Office Depot) and independent local print shops. For each, give the business name, full street address, a contact email if one is published, phone, and website. Order by closeness to the address.`,
+      { shops: [{ name: "", address: "", email: "", phone: "", website: "", distance: "" }] },
+      "fast"
+    );
+    const out = (r?.json_content?.shops || r?.answer?.shops || r?.shops || []) as PrintShop[];
+    return Array.isArray(out) ? out.filter((s) => s && s.name).slice(0, 4) : [];
+  } catch {
+    return [];
   }
 }
 

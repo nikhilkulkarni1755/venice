@@ -23,6 +23,10 @@ assets to fix it: posters, Google Business copy, a deployable website, TikToks.
 - `lib/analyze.ts` — Anthropic brain w/ deterministic analytics fallback.
 - `lib/omnara.ts` — agent-run logging/monitoring.
 - `lib/ingest.ts` — bakery profile (Firecrawl optional + generated fallback).
+- `lib/print.ts` — print-ready color PDF of the poster (pdf-lib) + print-order
+  email draft. `context.findPrinters()` (Answers API) locates nearby print shops
+  with contacts; `app/api/print` orchestrates. Note: USPS has no store emails /
+  emailed print jobs, so we target real print shops (chains + independents).
 
 ## Conventions
 - API keys are server-only. Never import a key into a client component.
