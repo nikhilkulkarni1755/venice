@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import type { Bakery, Analysis, GeneratedAsset } from "./types";
 import { SEED_BAKERIES } from "./seed";
@@ -21,12 +23,39 @@ const g = globalThis as unknown as {
   __analyses?: Map<string, Analysis>;
   __assets?: GeneratedAsset[];
 };
+// Local file persistence so data survives restarts without any cloud (used
+// whenever Supabase isn't configured). Seeds load first, then the file overlays.
+const DATA_FILE = path.join(process.cwd(), ".data", "store.json");
+
 if (!g.__bakeries) {
   g.__bakeries = new Map(SEED_BAKERIES.map((b) => [b.id, b]));
   g.__analyses = new Map();
   g.__assets = [];
+  if (!supabase) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+      for (const b of raw.bakeries ?? []) g.__bakeries.set(b.id, b);
+      for (const a of raw.analyses ?? []) g.__analyses.set(a.bakeryId, a);
+      g.__assets.push(...(raw.assets ?? []));
+    } catch {
+      /* no file yet */
+    }
+  }
 }
 const mem = { bakeries: g.__bakeries!, analyses: g.__analyses!, assets: g.__assets! };
+
+function persist() {
+  if (supabase) return; // Supabase is the source of truth when configured
+  try {
+    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+    fs.writeFileSync(
+      DATA_FILE,
+      JSON.stringify({ bakeries: [...mem.bakeries.values()], analyses: [...mem.analyses.values()], assets: mem.assets })
+    );
+  } catch {
+    /* best-effort */
+  }
+}
 
 export async function listBakeries(): Promise<Bakery[]> {
   if (supabase) {
@@ -47,6 +76,7 @@ export async function getBakery(id: string): Promise<Bakery | undefined> {
 export async function saveBakery(b: Bakery): Promise<void> {
   mem.bakeries.set(b.id, b);
   if (supabase) await supabase.from("bakeries").upsert({ id: b.id, data: b });
+  persist();
 }
 
 export async function getAnalysis(bakeryId: string): Promise<Analysis | undefined> {
@@ -60,6 +90,7 @@ export async function getAnalysis(bakeryId: string): Promise<Analysis | undefine
 export async function saveAnalysis(a: Analysis): Promise<void> {
   mem.analyses.set(a.bakeryId, a);
   if (supabase) await supabase.from("analyses").upsert({ bakery_id: a.bakeryId, data: a });
+  persist();
 }
 
 export async function listAssets(bakeryId: string): Promise<GeneratedAsset[]> {
@@ -73,6 +104,7 @@ export async function listAssets(bakeryId: string): Promise<GeneratedAsset[]> {
 export async function saveAsset(a: GeneratedAsset): Promise<void> {
   mem.assets.push(a);
   if (supabase) await supabase.from("assets").insert({ id: a.id, bakery_id: a.bakeryId, data: a });
+  persist();
 }
 
 export async function getAsset(assetId: string): Promise<GeneratedAsset | undefined> {
@@ -89,6 +121,7 @@ export async function patchAssetData(assetId: string, patch: Record<string, unkn
   const found = mem.assets.find((a) => a.id === assetId);
   if (found) found.data = { ...found.data, ...patch };
   if (supabase && found) await supabase.from("assets").update({ data: found }).eq("id", assetId);
+  persist();
 }
 
 export async function latestAssetOfKind(bakeryId: string, kind: GeneratedAsset["kind"]) {
