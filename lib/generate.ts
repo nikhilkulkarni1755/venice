@@ -1,7 +1,7 @@
 import type { Bakery, GeneratedAsset } from "./types";
 import { computeMetrics } from "./analyze";
 import { llmJson } from "./llm";
-import { styleguide, hasContext } from "./context";
+import { brandStyle } from "./context";
 import { createPreorderLink } from "./stripe";
 
 function id() {
@@ -133,14 +133,13 @@ export async function generateWebsite(b: Bakery): Promise<GeneratedAsset> {
     fallback
   );
 
-  // Pull real brand colors if the bakery already has a site (Context.dev styleguide).
-  let palette = { bg: "#fbf6ec", ink: "#2a1a12", accent: "#c97b3c", accent2: "#b4455f" };
-  if (hasContext() && /\./.test(b.address)) {
-    // (styleguide lookup is best-effort; skipped unless a domain is known)
-  }
+  // Pull the bakery's REAL brand colors + font from their live site (Context.dev).
+  const brand = await brandStyle(b.name);
+  const palette = brand.palette || { bg: "#fbf6ec", ink: "#2a1a12", accent: "#c97b3c", accent2: "#b4455f" };
+  const brandedFrom = brand.palette ? brand.domain : null;
 
   const preorder = await createPreorderLink(b, "Pre-order box", 1200);
-  const html = siteHtml(b, content, palette, preorder.url);
+  const html = siteHtml(b, content, palette, preorder.url, brand.font);
 
   return {
     id: id(),
@@ -149,11 +148,12 @@ export async function generateWebsite(b: Bakery): Promise<GeneratedAsset> {
     title: `Website — ${b.name}`,
     createdAt: new Date().toISOString(),
     provider: process.env.FREESTYLE_API_KEY ? "Freestyle (deployable)" : "FootfallAI render",
-    data: { html, content, palette, preorderUrl: preorder.url, deployUrl: null },
+    data: { html, content, palette, preorderUrl: preorder.url, deployUrl: null, brandedFrom },
   };
 }
 
-function siteHtml(b: Bakery, c: SiteContent, p: any, preorder: string): string {
+function siteHtml(b: Bakery, c: SiteContent, p: any, preorder: string, font?: string): string {
+  const ff = font ? `${font}, Georgia, serif` : "Georgia, serif";
   const menu = c.menu
     .map(
       (m) =>
@@ -162,7 +162,7 @@ function siteHtml(b: Bakery, c: SiteContent, p: any, preorder: string): string {
     .join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(b.name)}</title><style>
-*{box-sizing:border-box;margin:0}body{font-family:Georgia,serif;background:${p.bg};color:${p.ink}}
+*{box-sizing:border-box;margin:0}body{font-family:${ff};background:${p.bg};color:${p.ink}}
 .hero{padding:80px 24px;text-align:center;background:linear-gradient(160deg,${p.accent}22,transparent)}
 .hero h1{font-size:54px;margin-bottom:12px}.hero p{font-size:22px;opacity:.8}
 .cta{display:inline-block;margin-top:28px;background:${p.ink};color:${p.bg};padding:16px 32px;border-radius:14px;text-decoration:none;font-size:18px}

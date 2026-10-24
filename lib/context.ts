@@ -72,6 +72,46 @@ export async function retrieveBrand(identifier: string) {
   return call<any>("/brand/retrieve", { method: "POST", body: JSON.stringify({ identifier }) });
 }
 
+// Find a bakery's real website and extract its live brand palette + heading
+// font, so the generated site matches their actual look. Gated: only returns a
+// palette when the found domain shares a token with the bakery name, so fictional
+// demo bakeries don't get a random site's colors. Best-effort, [] on failure.
+export async function brandStyle(
+  name: string
+): Promise<{ palette?: { bg: string; ink: string; accent: string; accent2: string }; font?: string; domain?: string }> {
+  if (!hasContext()) return {};
+  try {
+    const s = await search(`${name} official website`, { numResults: 5 });
+    const results = (s?.results || []) as any[];
+    const bad = /(facebook|instagram|yelp|tripadvisor|google|doordash|ubereats|grubhub|wikipedia|x\.com|twitter|tiktok|linkedin|mapquest)\./i;
+    const hit = results.find((r) => r.url && !bad.test(r.url));
+    if (!hit) return {};
+    const domain = new URL(hit.url).hostname.replace(/^www\./, "");
+    const tokens = name.toLowerCase().split(/\s+/).filter((t) => t.length > 3);
+    const matches = tokens.some((t) => domain.toLowerCase().includes(t));
+    if (!matches) return { domain };
+
+    const sg = await styleguide(domain);
+    const style = sg?.styleguide || sg;
+    const c = style?.colors || {};
+    const hex = (v: unknown) => (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : undefined);
+    const accent = hex(c.accent) || hex(c.primary) || hex(c.brand);
+    const font =
+      style?.typography?.headings?.h1?.fontFamily || style?.typography?.body?.fontFamily || undefined;
+    const palette = accent
+      ? {
+          bg: hex(c.background) || "#fbf6ec",
+          ink: hex(c.text) || "#2a1a12",
+          accent,
+          accent2: hex(c.secondary) || accent,
+        }
+      : undefined;
+    return { palette, font, domain };
+  } catch {
+    return {};
+  }
+}
+
 // Ground the agent's recommendations in live web tactics. Returns compact
 // sources the UI can cite. Safe: returns [] if no key or on any failure.
 export async function researchTactics(bakeryName: string): Promise<{ url: string; title: string; description: string }[]> {

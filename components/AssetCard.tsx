@@ -96,6 +96,9 @@ export function AssetCard({ asset, onDeployed }: { asset: GeneratedAsset; onDepl
 
         {asset.kind === "website" && (
           <div>
+            {d.brandedFrom && (
+              <div className="mb-2 pill bg-sage/15 text-sage">🎨 brand colors pulled live from {d.brandedFrom}</div>
+            )}
             <iframe title={asset.title} srcDoc={d.html} className="h-80 w-full rounded-lg border border-crust/10 bg-white" />
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {deployUrl ? (
