@@ -12,7 +12,7 @@ export async function createPreorderLink(
   const key = process.env.STRIPE_SECRET_KEY;
   const base = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
   if (!key) {
-    return { url: `${base}/preorder/${b.id}`, provider: "FootfallAI pre-order (add Stripe key for live checkout)" };
+    return { url: `${base}/preorder/${b.id}`, provider: "Venice pre-order (add Stripe key for live checkout)" };
   }
   try {
     const stripe = new Stripe(key);
@@ -27,6 +27,6 @@ export async function createPreorderLink(
     });
     return { url: link.url, provider: "Stripe" };
   } catch {
-    return { url: `${base}/preorder/${b.id}`, provider: "FootfallAI pre-order (Stripe error)" };
+    return { url: `${base}/preorder/${b.id}`, provider: "Venice pre-order (Stripe error)" };
   }
 }

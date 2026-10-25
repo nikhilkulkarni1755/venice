@@ -73,6 +73,27 @@ export async function retrieveBrand(identifier: string) {
   return call<any>("/brand/retrieve", { method: "POST", body: JSON.stringify({ identifier }) });
 }
 
+// Brand palette + heading font from a domain's live styleguide.
+export async function brandOf(
+  domain: string
+): Promise<{ palette?: { bg: string; ink: string; accent: string; accent2: string }; font?: string; domain?: string }> {
+  const sg = await styleguide(domain);
+  const style = sg?.styleguide || sg;
+  const c = style?.colors || {};
+  const hex = (v: unknown) => (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : undefined);
+  const accent = hex(c.accent) || hex(c.primary) || hex(c.brand);
+  const font = style?.typography?.headings?.h1?.fontFamily || style?.typography?.body?.fontFamily || undefined;
+  const palette = accent
+    ? {
+        bg: hex(c.background) || "#fbf6ec",
+        ink: hex(c.text) || "#2a1a12",
+        accent,
+        accent2: hex(c.secondary) || accent,
+      }
+    : undefined;
+  return { palette, font, domain };
+}
+
 // Find a bakery's real website and extract its live brand palette + heading
 // font, so the generated site matches their actual look. Gated: only returns a
 // palette when the found domain shares a token with the bakery name, so fictional
@@ -92,22 +113,7 @@ export async function brandStyle(
     const matches = tokens.some((t) => domain.toLowerCase().includes(t));
     if (!matches) return { domain };
 
-    const sg = await styleguide(domain);
-    const style = sg?.styleguide || sg;
-    const c = style?.colors || {};
-    const hex = (v: unknown) => (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : undefined);
-    const accent = hex(c.accent) || hex(c.primary) || hex(c.brand);
-    const font =
-      style?.typography?.headings?.h1?.fontFamily || style?.typography?.body?.fontFamily || undefined;
-    const palette = accent
-      ? {
-          bg: hex(c.background) || "#fbf6ec",
-          ink: hex(c.text) || "#2a1a12",
-          accent,
-          accent2: hex(c.secondary) || accent,
-        }
-      : undefined;
-    return { palette, font, domain };
+    return brandOf(domain);
   } catch {
     return {};
   }
@@ -143,6 +149,45 @@ export async function findFedExOffice(address: string): Promise<PrintShop[]> {
     ];
   } catch {
     return [];
+  }
+}
+
+export async function pageMarkdown(url: string): Promise<string> {
+  return (await scrape(url))?.markdown?.data || "";
+}
+
+// Floor/suite details make Google Maps pages and geocoders fail, so drop them from queries.
+export const UNIT = /\s+(?:\d+(?:st|nd|rd|th) floor|(?:floor|suite|ste|unit|#)\s*\w+)/i;
+
+// Live Google Maps listing: rating, review count, category, website, recent reviews.
+// Star ratings on individual reviews are icon glyphs (\ue838), so we count them.
+// Null when the page isn't this business (a results list or a different place).
+export async function mapsListing(name: string, address: string) {
+  if (!hasContext()) return null;
+  try {
+    const raw = await pageMarkdown(
+      `https://www.google.com/maps/search/${encodeURIComponent(`${name} ${address.replace(UNIT, "")}`)}`
+    );
+    const text = raw.replace(/[\ue000-\uf8ff]/g, "");
+    const title = text.match(/^# (.+)$/m)?.[1] || "";
+    const tokens = name.toLowerCase().split(/\s+/).filter((t) => t.length > 3);
+    if (!tokens.some((t) => title.toLowerCase().includes(t))) return null;
+    const rc = text.match(/(\d\.\d)\s*\(([\d,]+)\)/) || text.match(/(\d\.\d)\s+([\d,]+) reviews/);
+    if (!rc) return null;
+    const reviews = [
+      ...raw.split("## Reviews")[1]?.matchAll(
+        /\n([^\n]{2,60})\n\n(?:[^\n]*\n\n){0,2}?(\ue838+)((?:an?|\d+) (?:day|week|month|year)s? ago)\n\n([^\n]+)/g
+      ) ?? [],
+    ].map((m) => ({ author: m[1], rating: m[2].length, date: m[3], text: m[4].replace(/\s*…\s*More$/, "") }));
+    return {
+      rating: Number(rc[1]),
+      reviewCount: Number(rc[2].replace(/,/g, "")),
+      category: text.match(/^([^\n·]+)·\s*$/m)?.[1]?.trim() || "Bakery",
+      website: text.match(/\]\((https?:\/\/(?!(?:[\w-]+\.)?google\.)[^)\s]+)\)/)?.[1],
+      reviews,
+    };
+  } catch {
+    return null;
   }
 }
 

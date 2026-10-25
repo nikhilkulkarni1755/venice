@@ -7,8 +7,8 @@ assets to fix it: posters, Google Business copy, a deployable website, TikToks.
 ## Stack
 - Next.js 15 (App Router, TS) + Tailwind. Single app; API routes under `app/api/*`.
 - SVG charts are hand-rolled in `components/Charts.tsx` (no chart dep).
-- Everything degrades gracefully: with **zero** env keys the app runs on seeded
-  demo data + deterministic analytics. Keys upgrade each capability to live.
+- No seeded or generated data anywhere: without keys a bakery can't be ingested, and
+  anything unavailable shows "Unavailable".
 
 ## Provider wrappers (one module per sponsor — never scatter calls)
 - `lib/context.ts` — **Context.dev** web-data layer. Key: `CONTEXT_DEV_API_KEY` (server-only).
@@ -22,7 +22,17 @@ assets to fix it: posters, Google Business copy, a deployable website, TikToks.
 - `lib/store.ts` — Supabase (persistence) w/ in-memory fallback.
 - `lib/analyze.ts` — Anthropic brain w/ deterministic analytics fallback.
 - `lib/omnara.ts` — agent-run logging/monitoring.
-- `lib/ingest.ts` — bakery profile (Firecrawl optional + generated fallback).
+- `lib/ingest.ts` — live bakery profile from the Apify place (primary) or `context.mapsListing`;
+  menu from the site's ordering page or the site itself; `avgTicket` = mean counter-item price.
+  Never generates data.
+- `lib/apify.ts` — Google place via Apify (`APIFY_TOKEN`): popular times, hours, amenities, dated
+  reviews, review tags, and the 3 nearest comparable places. `lib/besttime.ts` — BestTime
+  (`BESTTIME_API_KEY_PRIVATE`) popular times as a cross-check.
+- `lib/spots.ts` — poster-spots agent: busy places 0.75-1 mile away (Apify Google Maps search around
+  the bakery), ranked by review volume per kind; deterministic, no model. `/api/spots` caches 24h.
+- `lib/traffic.ts` — pure foot-traffic math (peer rank, estimated revenue, dead window, room to grow).
+- `lib/images.ts` — AI dish images for the poster (OpenAI, `OPENAI_API_KEY`). The image prompt asks
+  for a tiny left-aligned "AI generated" caption in the image itself; no key = plain dish cards.
 - `lib/print.ts` — print-ready color PDF of the poster (pdf-lib) + print-order
   email draft. `context.findFedExOffice()` (Answers API) locates the nearest
   FedEx Office and derives its store email `usaNNNN@fedex.com`; `app/api/print`
@@ -32,5 +42,6 @@ assets to fix it: posters, Google Business copy, a deployable website, TikToks.
 
 ## Conventions
 - API keys are server-only. Never import a key into a client component.
-- Each integration checks for its key and no-ops/falls back if absent.
+- Each integration checks for its key and no-ops if absent. Missing data is shown as
+  "Unavailable", never generated.
 - Keep code minimal; reuse existing helpers.

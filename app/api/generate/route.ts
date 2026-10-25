@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBakery, saveAsset } from "@/lib/store";
-import { generatePoster, generateGBP, generateWebsite, generateTiktok } from "@/lib/generate";
+import { generateGBP, generateWebsite, generateTiktok } from "@/lib/generate";
 import { logAgentRun } from "@/lib/omnara";
 import type { GeneratedAsset } from "@/lib/types";
 
@@ -8,7 +8,6 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 90;
 
 const GENERATORS = {
-  poster: generatePoster,
   google_business: generateGBP,
   website: generateWebsite,
   tiktok: generateTiktok,

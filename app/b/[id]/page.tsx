@@ -2,10 +2,11 @@
 
 import { use, useEffect, useState } from "react";
 import type { Bakery, Analysis, GeneratedAsset, Recommendation } from "@/lib/types";
-import { PopularTimesChart, SalesChart } from "@/components/Charts";
+import { PeerChart, PopularTimesChart } from "@/components/Charts";
 import { computeKpis } from "@/components/kpis";
 import { AssetCard } from "@/components/AssetCard";
 import { PrintPanel } from "@/components/PrintPanel";
+import { SpotsPanel } from "@/components/SpotsPanel";
 
 const TYPE_LABEL: Record<string, string> = {
   poster: "Poster",
@@ -27,7 +28,7 @@ export default function Dashboard({ params }: { params: Promise<{ id: string }> 
     const j = await r.json();
     setBakery(j.bakery);
     setAnalysis(j.analysis || null);
-    setAssets(j.assets || []);
+    setAssets([...(j.assets || [])].reverse());
   }
   useEffect(() => {
     load();
@@ -41,11 +42,14 @@ export default function Dashboard({ params }: { params: Promise<{ id: string }> 
       body: JSON.stringify({ bakeryId: id }),
     });
     const j = await r.json();
-    setAnalysis(j.analysis);
+    if (j.analysis) setAnalysis(j.analysis);
+    else alert(j.error);
     setAnalyzing(false);
   }
 
   async function build(type: string) {
+    // The poster is made by the print agent (design + print in one step).
+    if (type === "poster") return document.getElementById("print-run")?.click();
     setBuilding(type);
     const r = await fetch("/api/generate", {
       method: "POST",
@@ -58,7 +62,7 @@ export default function Dashboard({ params }: { params: Promise<{ id: string }> 
   }
 
   if (!bakery) return <main className="p-10 text-crust/60">Loading…</main>;
-  const kpis = computeKpis(bakery, analysis);
+  const kpis = computeKpis(bakery);
 
   return (
     <main className="mx-auto max-w-5xl px-5 py-8">
@@ -71,9 +75,6 @@ export default function Dashboard({ params }: { params: Promise<{ id: string }> 
         </div>
         <div className="flex items-center gap-2">
           <span className="pill bg-butter/30 text-caramel">★ {bakery.rating} · {bakery.reviewCount} reviews</span>
-          <span className={`pill ${bakery.source === "live" ? "bg-sage/20 text-sage" : "bg-crust/10 text-crust/60"}`}>
-            {bakery.source === "live" ? "live data" : "seed data"}
-          </span>
         </div>
       </header>
 
@@ -92,14 +93,22 @@ export default function Dashboard({ params }: { params: Promise<{ id: string }> 
       <section className="mt-4 grid gap-4 md:grid-cols-2">
         <div className="card p-5">
           <div className="mb-2 flex items-center justify-between">
-            <h3 className="font-semibold text-crust">Weekday foot traffic</h3>
-            <span className="pill bg-berry/15 text-berry">■ dead hours</span>
+            <h3 className="font-semibold text-crust">Foot traffic by day and hour</h3>
+            <span className="pill bg-berry/15 text-berry">□ dead window</span>
           </div>
-          <PopularTimesChart bakery={bakery} />
+          {bakery.popularTimes.length ? (
+            <PopularTimesChart bakery={bakery} />
+          ) : (
+            <p className="text-crust/50">Unavailable: connect BestTime or Apify for popular times.</p>
+          )}
         </div>
         <div className="card p-5">
-          <h3 className="mb-2 font-semibold text-crust">Daily revenue (30d)</h3>
-          <SalesChart sales={bakery.sales} />
+          <h3 className="mb-2 font-semibold text-crust">Nearby bakeries: reviews per month</h3>
+          {(bakery.peers ?? []).length ? (
+            <PeerChart bakery={bakery} />
+          ) : (
+            <p className="text-crust/50">Unavailable: no comparable nearby places found.</p>
+          )}
         </div>
       </section>
 
@@ -137,14 +146,14 @@ export default function Dashboard({ params }: { params: Promise<{ id: string }> 
                 <div key={rec.id} className="rounded-xl border border-crust/10 bg-white/60 p-4">
                   <div className="flex items-start justify-between gap-2">
                     <h4 className="font-semibold text-crust">{rec.title}</h4>
-                    <span className="pill bg-butter/30 text-caramel whitespace-nowrap">{Math.round(rec.confidence * 100)}%</span>
+                    <span className="pill bg-butter/30 text-caramel whitespace-nowrap">{rec.effort} effort</span>
                   </div>
                   <p className="mt-1 text-sm text-crust/70">{rec.rationale}</p>
                   <div className="mt-2 flex items-center justify-between">
-                    <span className="pill bg-sage/15 text-sage">{rec.projectedLift}</span>
+                    <span />
                     {rec.buildable && TYPE_LABEL[rec.type] && (
                       <button className="btn-ghost !py-1.5 !text-xs" onClick={() => build(rec.type)} disabled={building === rec.type}>
-                        {building === rec.type ? "Building…" : `Build ${TYPE_LABEL[rec.type]} ✨`}
+                        {building === rec.type ? "Building…" : rec.type === "poster" ? "Design & print ✨" : `Build ${TYPE_LABEL[rec.type]} ✨`}
                       </button>
                     )}
                   </div>
@@ -158,7 +167,7 @@ export default function Dashboard({ params }: { params: Promise<{ id: string }> 
       {/* Quick-build bar */}
       {analysis && (
         <section className="mt-4 flex flex-wrap gap-2">
-          {Object.entries(TYPE_LABEL).map(([type, label]) => (
+          {Object.entries(TYPE_LABEL).filter(([type]) => type !== "poster").map(([type, label]) => (
             <button key={type} className="btn-ghost" onClick={() => build(type)} disabled={building === type}>
               {building === type ? "Building…" : `+ ${label}`}
             </button>
@@ -167,14 +176,15 @@ export default function Dashboard({ params }: { params: Promise<{ id: string }> 
       )}
 
       {/* Print & distribute */}
-      {analysis && <PrintPanel bakeryId={id} />}
+      <PrintPanel bakeryId={id} onDesigned={load} />
+      <SpotsPanel bakeryId={id} assets={assets} onDone={load} />
 
       {/* Generated assets */}
-      {assets.length > 0 && (
+      {assets.some((a) => a.kind !== "spots") && (
         <section className="mt-6">
-          <h2 className="mb-3 font-display text-2xl text-crust">Generated assets ({assets.length})</h2>
+          <h2 className="mb-3 font-display text-2xl text-crust">Generated assets ({assets.filter((a) => a.kind !== "spots").length})</h2>
           <div className="grid gap-4 md:grid-cols-2">
-            {assets.map((a) => (
+            {assets.filter((a) => a.kind !== "spots").map((a) => (
               <AssetCard key={a.id} asset={a} onDeployed={load} />
             ))}
           </div>

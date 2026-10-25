@@ -9,7 +9,7 @@ export async function llmJson<T>(system: string, user: string, fallback: T): Pro
     const client = new Anthropic({ apiKey });
     const resp = await client.messages.create({
       model: process.env.ANTHROPIC_MODEL || "claude-opus-4-8",
-      max_tokens: 1800,
+      max_tokens: 4000,
       system,
       messages: [{ role: "user", content: user }],
     });

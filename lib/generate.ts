@@ -1,5 +1,7 @@
 import type { Bakery, GeneratedAsset } from "./types";
-import { computeMetrics } from "./analyze";
+import { counterItems, deadWindow, popularItems } from "./traffic";
+import { DEFAULT_PALETTE, isDark, type Palette } from "./print";
+import { dishImage } from "./images";
 import { llmJson } from "./llm";
 import { brandStyle } from "./context";
 import { createPreorderLink } from "./stripe";
@@ -7,60 +9,96 @@ import { createPreorderLink } from "./stripe";
 function id() {
   return Math.random().toString(36).slice(2, 10);
 }
-function deadLabel(b: Bakery) {
-  return computeMetrics(b).deadHours.join(" & ") || "2–5pm";
-}
 
 // ---------------------------------------------------------------- POSTER ----
-type PosterCopy = { headline: string; subhead: string; offer: string; cta: string; footer: string };
+type PosterCopy = { headline: string; name: string; address: string; items: string[] };
 
-export async function generatePoster(b: Bakery): Promise<GeneratedAsset> {
-  const dead = deadLabel(b);
-  const fallback: PosterCopy = {
-    headline: "Afternoon Rescue",
-    subhead: `Fresh bakes, half the wait`,
-    offer: `${dead}: any pastry + drip coffee for $6`,
-    cta: "Pre-order & skip the line",
-    footer: b.name,
+// Verified facts the agents may state; anything not here must not be claimed.
+function facts(b: Bakery) {
+  const p = b.brand?.palette;
+  return {
+    name: b.name,
+    address: b.address,
+    categories: b.categories,
+    hours: b.hours ?? [],
+    amenities: b.attributes ?? [],
+    orderOnline: !!b.orderUrl,
+    quietestWindow: deadWindow(b)?.label ?? null,
+    menu: counterItems(b.menu).map((i) => `${i.name} $${i.price}`),
+    websiteStyle: p
+      ? `${isDark(p.bg) ? "dark" : "light"} background ${p.bg}, text ${p.ink}, accent ${p.accent}${b.brand?.font ? `, ${b.brand.font} headings` : ""}`
+      : null,
   };
-  const copy = await llmJson<PosterCopy>(
-    `You write punchy print-poster copy for a bakery. Return JSON {headline, subhead, offer, cta, footer}. The goal is filling the ${dead} dead window. Keep headline <=3 words, offer concrete.`,
-    JSON.stringify({ bakery: b.name, deadWindow: dead, rating: b.rating, vibe: b.categories }),
-    fallback
-  );
+}
 
-  const preorder = await createPreorderLink(b, "Afternoon pastry box", 600);
-  const qr = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=0&data=${encodeURIComponent(preorder.url)}`;
-  const svg = posterSvg(copy, qr, b);
+// A real pairing at menu prices (no invented discount): the signature pastry + a coffee.
+function pairing(b: Bakery) {
+  const items = counterItems(b.menu);
+  const pastries = items.filter((i) => /viennois|bread|pastr/i.test(i.category));
+  const coffees = items.filter((i) => /drink|coffee/i.test(i.category) && /coffee|espresso|americano/i.test(i.name));
+  const pastry = pastries.find((i) => /croissant/i.test(i.name)) ?? pastries[0];
+  const drink = coffees.find((i) => /drip/i.test(i.name)) ?? coffees.sort((x, y) => x.price - y.price)[0];
+  return pastry && drink ? { text: `${pastry.name} + ${drink.name}`, price: Math.round((pastry.price + drink.price) * 100) / 100 } : null;
+}
 
+// Deterministic design from verified data (no model, nothing invented): "<Category> nearby!",
+// name, address, then the dishes reviewers mention most (no prices) in the website's colors.
+export async function generatePoster(b: Bakery): Promise<GeneratedAsset> {
+  const cat = b.categories[0] || "Bakery";
+  let items = popularItems(b);
+  if (!items.length && b.reviewTags?.length) {
+    // No menu to match against: let the model pick specific orderable dishes from the review tags only.
+    const tags = b.reviewTags.map((t) => t.title);
+    const picked = await llmJson<{ items: string[] }>(
+      `From these review tags pick up to 2 that are specific food or drink items a customer can order (not services, atmosphere, adjectives or generic words like "pastries"). Return JSON {"items":[...]} using the exact tag text.`,
+      JSON.stringify(tags),
+      { items: [] }
+    );
+    items = picked.items.filter((t) => tags.includes(t)).slice(0, 2).map((t) => t.replace(/\b\w/g, (c) => c.toUpperCase()));
+  }
+  const copy: PosterCopy = { headline: `${cat[0].toUpperCase()}${cat.slice(1)} nearby!`, name: b.name, address: b.address, items };
+  const palette = b.brand?.palette ?? DEFAULT_PALETTE;
+  const images = await Promise.all(items.map((i) => dishImage(i, isDark(palette.bg))));
   return {
     id: id(),
     bakeryId: b.id,
     kind: "poster",
     title: `Poster — ${copy.headline}`,
     createdAt: new Date().toISOString(),
-    provider: process.env.CANVA_API_TOKEN ? "Canva" : "FootfallAI render",
-    data: { copy, svg, preorderUrl: preorder.url, preorderProvider: preorder.provider },
+    provider: "Venice render",
+    data: { copy, svg: posterSvg(copy, images, b.brand?.font, palette), palette, images },
   };
 }
 
-function posterSvg(c: PosterCopy, qr: string, b: Bakery): string {
+function posterSvg(c: PosterCopy, images: (string | null)[], font: string | undefined, p: Palette): string {
+  const family = `${font ? `'${esc(font)}', ` : ""}Georgia, serif`;
+  // Shrink long text to fit the 600px poster (k = average glyph width / font size).
+  const fit = (t: string, max: number, w: number, k = 0.56) => Math.min(max, Math.floor(w / (t.length * k)));
+  const w = 230;
+  const itemSize = Math.min(...c.items.map((t) => fit(t, 38, w - 30, 0.62))); // one size for all items
+  const cards = c.items
+    .map((item, i) => {
+      const x = c.items.length === 1 ? 185 : 60 + i * 250;
+      const ink = isDark(p.accent2) ? "#ffffff" : "#111111";
+      if (!images[i]) {
+        return `<rect x="${x}" y="470" width="${w}" height="250" rx="20" fill="${p.accent2}"/>
+  <text x="${x + w / 2}" y="607" text-anchor="middle" fill="${ink}" font-family="${family}" font-size="${itemSize}" font-weight="bold">${esc(item)}</text>`;
+      }
+      // Full square dish image (uncropped, so its own corner label stays visible) above the name strip.
+      return `<clipPath id="card${i}"><rect x="${x}" y="470" width="${w}" height="286" rx="20"/></clipPath>
+  <g clip-path="url(#card${i})"><image href="${images[i]}" x="${x}" y="470" width="${w}" height="${w}"/><rect x="${x}" y="${470 + w}" width="${w}" height="56" fill="${p.accent2}"/></g>
+  <text x="${x + w / 2}" y="${470 + w + 37}" text-anchor="middle" fill="${ink}" font-family="${family}" font-size="${fit(item, 28, w - 24, 0.62)}" font-weight="bold">${esc(item)}</text>`;
+    })
+    .join("\n  ");
   return `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="800" viewBox="0 0 600 800">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#2a1a12"/><stop offset="100%" stop-color="#4a2c1d"/>
-    </linearGradient>
-  </defs>
-  <rect width="600" height="800" fill="url(#bg)"/>
-  <circle cx="300" cy="150" r="300" fill="#f4c04e" opacity="0.08"/>
-  <text x="300" y="90" text-anchor="middle" fill="#f4c04e" font-family="Georgia,serif" font-size="26" letter-spacing="6">🥐 ${esc(b.name.toUpperCase())}</text>
-  <text x="300" y="250" text-anchor="middle" fill="#f7efe3" font-family="Georgia,serif" font-size="92" font-weight="bold">${esc(c.headline)}</text>
-  <text x="300" y="310" text-anchor="middle" fill="#f4c04e" font-family="Helvetica,Arial" font-size="30">${esc(c.subhead)}</text>
-  <rect x="80" y="370" width="440" height="110" rx="18" fill="#b4455f"/>
-  <text x="300" y="435" text-anchor="middle" fill="#fff" font-family="Helvetica,Arial" font-size="30" font-weight="bold">${esc(c.offer)}</text>
-  <rect x="180" y="530" width="240" height="240" rx="16" fill="#f7efe3"/>
-  <image href="${qr}" x="190" y="540" width="220" height="220"/>
-  <text x="300" y="792" text-anchor="middle" fill="#f7efe3" font-family="Helvetica,Arial" font-size="22" font-weight="bold">${esc(c.cta)} →</text>
+  ${font ? `<defs><style>@import url('https://fonts.googleapis.com/css2?family=${esc(encodeURIComponent(font))}:wght@400;700&amp;display=swap');</style></defs>` : ""}
+  <rect width="600" height="800" fill="${p.bg}"/>
+  <circle cx="300" cy="200" r="330" fill="${p.accent}" opacity="0.08"/>
+  <text x="300" y="210" text-anchor="middle" fill="${p.ink}" font-family="${family}" font-size="${fit(c.headline, 84, 540, 0.62)}" font-weight="bold">${esc(c.headline)}</text>
+  <text x="300" y="295" text-anchor="middle" fill="${p.accent}" font-family="${family}" font-size="${fit(c.name, 40, 540, 0.62)}" font-weight="bold">${esc(c.name)}</text>
+  <text x="300" y="345" text-anchor="middle" fill="${p.ink}" opacity="0.85" font-family="${family}" font-size="${fit(c.address, 26, 540)}">${esc(c.address)}</text>
+  <line x1="60" y1="395" x2="540" y2="395" stroke="${p.accent}" stroke-width="2"/>
+  ${cards}
 </svg>`;
 }
 function esc(s: string) {
@@ -70,36 +108,33 @@ function esc(s: string) {
 // ------------------------------------------------------- GOOGLE BUSINESS ----
 type GBP = {
   description: string;
-  categories: string[];
-  attributes: string[];
   posts: { title: string; body: string }[];
   reviewReplies: { to: string; reply: string }[];
 };
 
 export async function generateGBP(b: Bakery): Promise<GeneratedAsset> {
-  const dead = deadLabel(b);
+  const f = facts(b);
+  const pair = pairing(b);
+  const reviews = [...b.reviews].sort((x, y) => x.rating - y.rating).slice(0, 3);
   const fallback: GBP = {
-    description: `${b.name} is a neighborhood bakery known for morning buns, laminated pastries, and house sourdough. Order ahead for afternoon pickup and skip the line.`,
-    categories: ["Bakery", "Coffee shop", "Patisserie", "Takeout"],
-    attributes: ["Order ahead", "Afternoon pickup", "Wheelchair accessible", "Outdoor seating"],
-    posts: [
-      { title: "Afternoon Rescue", body: `New ${dead} deal: any pastry + coffee for $6. Pre-order on our site.` },
-      { title: "Fresh Sourdough Fridays", body: "Reserve a loaf before 11am. Limited daily bake." },
-      { title: "Behind the counter", body: "Our morning buns are laminated by hand at 5am. Watch the bake." },
-    ],
-    reviewReplies: b.reviews
-      .filter((r) => r.rating <= 3)
-      .slice(0, 2)
-      .map((r) => ({
-        to: r.author,
-        reply: `Thanks ${r.author} — you're right that afternoons ran thin. We've added a fresh ${dead} bake and a pre-order option. Come back and let us make it right!`,
-      })),
+    description: `${b.name} is a ${(b.categories[0] || "bakery").toLowerCase()} at ${b.address}.${b.orderUrl ? " Order online for pickup or delivery." : ""}`,
+    posts: pair
+      ? [{ title: "Coffee and pastry", body: `${pair.text}, $${pair.price.toFixed(2)} at menu prices. Find us at ${b.address}.` }]
+      : [],
+    reviewReplies: reviews.map((r) => ({
+      to: r.author,
+      reply:
+        r.rating >= 4
+          ? `Thank you, ${r.author}, for the kind words! We hope to see you again soon.`
+          : `Thank you for the feedback, ${r.author}. We're sorry we fell short and would love to hear more.`,
+    })),
   };
-  const data = await llmJson<GBP>(
-    `You optimize Google Business Profiles for local bakeries to win the local map pack and fill slow hours. Return JSON {description (<=750 chars, keyword-rich), categories[], attributes[], posts:[{title,body}] x3, reviewReplies:[{to,reply}]}. Focus the posts on the ${dead} dead window.`,
-    JSON.stringify({ bakery: b.name, categories: b.categories, reviews: b.reviews, deadWindow: dead }),
+  const ai = await llmJson<GBP>(
+    `You write Google Business Profile copy for a local bakery. Return JSON {description (<=750 chars), posts:[{title,body}] x3, reviewReplies:[{to,reply}]}. Use ONLY the facts provided: never invent amenities, products, prices, discounts, awards or hours, and avoid unverifiable quality claims (handcrafted, fresh, authentic, signature, traditional, daily, expertly). Posts may use the menu pairing at its listed price and the quietestWindow. Replies must answer only what the review says, thank the reviewer, make no claims about ingredients or quality, and promise nothing beyond listening.`,
+    JSON.stringify({ facts: f, pairing: pair, reviews }),
     fallback
   );
+  const cut = (t: string) => (t.length <= 750 ? t : t.slice(0, 750).replace(/\s+\S*$/, ""));
 
   return {
     id: id(),
@@ -107,8 +142,15 @@ export async function generateGBP(b: Bakery): Promise<GeneratedAsset> {
     kind: "google_business",
     title: "Google Business Profile — optimized",
     createdAt: new Date().toISOString(),
-    provider: "FootfallAI + Google Business",
-    data: data as unknown as Record<string, unknown>,
+    provider: "Venice + Google Business",
+    data: {
+      description: cut(ai.description || fallback.description),
+      categories: b.categories,
+      attributes: (b.attributes ?? []).slice(0, 12),
+      posts: ai.posts ?? fallback.posts,
+      reviewReplies: ai.reviewReplies ?? fallback.reviewReplies,
+      notes: "Categories and attributes come from the live Google listing. Posts are suggestions: confirm any offer before publishing.",
+    },
   };
 }
 
@@ -116,7 +158,7 @@ export async function generateGBP(b: Bakery): Promise<GeneratedAsset> {
 type SiteContent = { tagline: string; about: string; menu: { name: string; price: string; note: string }[]; hoursNote: string };
 
 export async function generateWebsite(b: Bakery): Promise<GeneratedAsset> {
-  const dead = deadLabel(b);
+  const dead = deadWindow(b)?.label ?? "afternoon";
   const fallback: SiteContent = {
     tagline: "Handmade pastries, baked before sunrise.",
     about: `${b.name} is a neighborhood bakery serving laminated pastries, house sourdough, and small-batch coffee. Pre-order ahead and pick up during our quiet ${dead} window.`,
@@ -147,7 +189,7 @@ export async function generateWebsite(b: Bakery): Promise<GeneratedAsset> {
     kind: "website",
     title: `Website — ${b.name}`,
     createdAt: new Date().toISOString(),
-    provider: process.env.FREESTYLE_API_KEY ? "Freestyle (deployable)" : "FootfallAI render",
+    provider: process.env.FREESTYLE_API_KEY ? "Freestyle (deployable)" : "Venice render",
     data: { html, content, palette, preorderUrl: preorder.url, deployUrl: null, brandedFrom },
   };
 }
@@ -182,7 +224,7 @@ function siteHtml(b: Bakery, c: SiteContent, p: any, preorder: string, font?: st
 type Tiktok = { hook: string; script: { time: string; shot: string; vo: string }[]; caption: string; hashtags: string[] };
 
 export async function generateTiktok(b: Bakery): Promise<GeneratedAsset> {
-  const dead = deadLabel(b);
+  const dead = deadWindow(b)?.label ?? "afternoon";
   const fallback: Tiktok = {
     hook: `POV: it's ${dead} and the croissants just came out`,
     script: [
@@ -225,7 +267,7 @@ export async function generateTiktok(b: Bakery): Promise<GeneratedAsset> {
     kind: "tiktok",
     title: `TikTok — ${data.hook.slice(0, 40)}`,
     createdAt: new Date().toISOString(),
-    provider: audioUrl ? "FootfallAI + ElevenLabs" : "FootfallAI",
+    provider: audioUrl ? "Venice + ElevenLabs" : "Venice",
     data: { ...data, audioUrl, audioNote } as unknown as Record<string, unknown>,
   };
 }

@@ -43,16 +43,13 @@ export function AssetCard({ asset, onDeployed }: { asset: GeneratedAsset; onDepl
         {asset.kind === "poster" && (
           <div>
             <div
-              className="mx-auto max-w-[260px] overflow-hidden rounded-lg shadow"
+              className="mx-auto max-w-[260px] overflow-hidden rounded-lg shadow [&>svg]:h-auto [&>svg]:w-full"
               dangerouslySetInnerHTML={{ __html: d.svg }}
             />
             <div className="mt-3 flex gap-2">
               <button className="btn-ghost !py-1.5 !text-xs" onClick={() => download(`${asset.id}-poster.svg`, d.svg, "image/svg+xml")}>
                 ⬇ Download SVG
               </button>
-              <a className="btn-ghost !py-1.5 !text-xs" href={d.preorderUrl} target="_blank">
-                QR → pre-order ({d.preorderProvider?.split("(")[0]})
-              </a>
             </div>
           </div>
         )}

@@ -1,232 +1,131 @@
-import Anthropic from "@anthropic-ai/sdk";
-import type { Bakery, Analysis, Recommendation, HourPoint } from "./types";
+import type { Bakery, Analysis, Recommendation } from "./types";
 import { researchTactics } from "./context";
+import { llmJson } from "./llm";
+import { counterPrices, deadWindow, estimatedRevenue, peerRank, roomToGrow, weeklyOpenHours } from "./traffic";
 
-// ---------------- pure analytics (always runs, no key needed) ----------------
-
-function fmtHour(h: number): string {
-  const ap = h >= 12 ? "pm" : "am";
-  const hr = h % 12 === 0 ? 12 : h % 12;
-  return `${hr}${ap}`;
-}
-
-function avgByHour(bakery: Bakery, days: string[]): Map<number, number> {
-  const sums = new Map<number, { total: number; n: number }>();
-  for (const dt of bakery.popularTimes) {
-    if (days.length && !days.includes(dt.day)) continue;
-    for (const hp of dt.hours) {
-      const s = sums.get(hp.hour) ?? { total: 0, n: 0 };
-      s.total += hp.busyness;
-      s.n += 1;
-      sums.set(hp.hour, s);
-    }
-  }
-  const out = new Map<number, number>();
-  for (const [h, s] of sums) out.set(h, Math.round(s.total / s.n));
-  return out;
-}
-
-export function computeMetrics(bakery: Bakery) {
-  const weekday = ["Mon", "Tue", "Wed", "Thu", "Fri"];
-  const byHour = avgByHour(bakery, weekday);
-  const open = [...byHour.entries()].filter(([h]) => h >= 7 && h <= 19);
-  const busyAt = open.filter(([, b]) => b > 0);
-  const avgBusy = busyAt.reduce((a, [, b]) => a + b, 0) / Math.max(1, busyAt.length);
-
-  // Peak = the hours clearly above average busyness.
-  const peaks = open
-    .filter(([, b]) => b >= avgBusy * 1.15)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([h]) => h)
-    .sort((a, b) => a - b);
-  const peakWindows = groupRanges(peaks);
-
-  // Dead window = the emptiest contiguous 3-hour stretch within core trading
-  // hours (10am-6pm), so near-open/near-close emptiness never masks the real
-  // mid-day lull. This is the single biggest growth lever.
-  const core = [10, 11, 12, 13, 14, 15, 16, 17].map((h) => ({ h, b: byHour.get(h) ?? 0 }));
-  let best = { start: 14, avg: Infinity };
-  for (let i = 0; i + 2 < core.length; i++) {
-    const avg = (core[i].b + core[i + 1].b + core[i + 2].b) / 3;
-    if (avg < best.avg) best = { start: core[i].h, avg };
-  }
-  const deadWindows = [`${fmtHour(best.start)}–${fmtHour(best.start + 3)}`];
-
-  const last7 = bakery.sales.slice(-7);
-  const weeklyRevenue = last7.reduce((a, s) => a + s.revenue, 0);
-  const tx = last7.reduce((a, s) => a + s.transactions, 0);
-  const avgTicket = tx ? weeklyRevenue / tx : 0;
-
+// Every fact (and number) the analysis may state. The model writes the narrative; it never
+// computes: projections come from traffic.ts and are included here.
+export function analysisFacts(b: Bakery) {
+  const dead = deadWindow(b);
+  const rank = peerRank(b);
+  const est = estimatedRevenue(b);
+  const prices = counterPrices(b.menu).sort((x, y) => x - y);
+  const nearby = (b.peers ?? []).map((p) => ({
+    name: p.name,
+    metersAway: p.distanceM,
+    rating: p.rating,
+    reviewsPerMonth: p.reviewsPerMonth,
+  }));
+  const busiest = [...nearby].filter((p) => p.reviewsPerMonth).sort((x, y) => y.reviewsPerMonth! - x.reviewsPerMonth!)[0];
   return {
-    byHour,
-    peakHours: peakWindows,
-    deadHours: deadWindows,
-    weeklyRevenue,
-    avgTicket: Math.round(avgTicket * 100) / 100,
-    avgBusy: Math.round(avgBusy),
+    name: b.name,
+    address: b.address,
+    rating: b.rating,
+    reviewCount: b.reviewCount,
+    reviewsPerMonth: b.reviewsPerMonth,
+    rank: rank && `${rank.rank} of ${rank.of} nearby by ${rank.basis}`,
+    nearby,
+    busiestNeighbor: busiest && b.reviewsPerMonth ? { ...busiest, timesOurReviewRate: Math.round((busiest.reviewsPerMonth! / b.reviewsPerMonth) * 10) / 10 } : null,
+    quietestWindow: dead && {
+      label: dead.label,
+      busynessOutOf100: dead.avg,
+      secondSource: dead.altAgrees === undefined ? "unavailable" : dead.altAgrees ? "agrees" : "disagrees",
+    },
+    averageCounterPrice: b.avgTicket,
+    counterPriceRange: prices.length ? [prices[0], prices[prices.length - 1]] : null,
+    estimatedVisitsPerDay: est && { low: est.low.visits, base: est.base.visits, high: est.high.visits },
+    roomToGrowIfQuietestWindowReachedItsDaysAverage: roomToGrow(b),
+    openHoursPerWeek: Math.round(weeklyOpenHours(b.hours)),
+    amenities: b.attributes ?? [],
+    salesData: "unavailable",
+    recentReviews: b.reviews.slice(0, 8).map((r) => ({ stars: r.rating, text: r.text.slice(0, 200) })),
   };
 }
-
-function groupRanges(hours: number[]): string[] {
-  if (!hours.length) return [];
-  const sorted = [...hours].sort((a, b) => a - b);
-  const ranges: string[] = [];
-  let start = sorted[0];
-  let prev = sorted[0];
-  for (let i = 1; i <= sorted.length; i++) {
-    const h = sorted[i];
-    if (h === prev + 1) {
-      prev = h;
-    } else {
-      ranges.push(start === prev ? fmtHour(start) : `${fmtHour(start)}–${fmtHour(prev + 1)}`);
-      start = h;
-      prev = h;
-    }
-  }
-  return ranges;
-}
+type Facts = ReturnType<typeof analysisFacts>;
 
 function sentimentFromReviews(bakery: Bakery) {
   const positive: string[] = [];
   const negative: string[] = [];
   for (const r of bakery.reviews) {
-    if (r.rating >= 4) positive.push(r.text);
-    else negative.push(r.text);
+    if (!r.text) continue;
+    (r.rating >= 4 ? positive : negative).push(r.text);
   }
   return { positive: positive.slice(0, 4), negative: negative.slice(0, 4) };
 }
 
-// ---------------- recommendation engine (deterministic baseline) ----------------
+const EFFORT: Record<string, Recommendation["effort"]> = { poster: "low", google_business: "low", website: "medium", tiktok: "medium" };
 
-function baselineRecommendations(bakery: Bakery, m: ReturnType<typeof computeMetrics>): Recommendation[] {
-  const recs: Recommendation[] = [];
-  const dead = m.deadHours.join(", ") || "midday";
-
-  recs.push({
-    id: "rec-poster",
-    type: "poster",
-    title: `"Afternoon Rescue" poster for the ${dead} lull`,
-    rationale: `Weekday busyness collapses to ~${Math.round(m.avgBusy * 0.4)}/100 during ${dead}, while mornings hit peak. A limited-time afternoon pastry-box offer with a QR pre-order drives trial in the dead window without discounting your morning rush.`,
-    projectedLift: "+9–14% weekday afternoon footfall",
-    effort: "low",
-    confidence: 0.82,
-    buildable: true,
-  });
-
-  recs.push({
-    id: "rec-gbp",
-    type: "google_business",
-    title: "Optimize Google Business Profile for afternoon + discovery",
-    rationale: `Reviews praise pastries and baristas but mention empty afternoon cases. Refreshed GBP copy, afternoon-specific posts, and category/attribute tuning lift local pack visibility during the exact hours you're empty.`,
-    projectedLift: "+18% profile views, +6% direction requests",
-    effort: "low",
-    confidence: 0.76,
-    buildable: true,
-  });
-
-  recs.push({
-    id: "rec-website",
-    type: "website",
-    title: "Ship a conversion-focused one-page site with pre-order",
-    rationale: `${bakery.name} has strong word-of-mouth but no owned web presence capturing it. A fast one-pager with menu, hours, story, and a Stripe pre-order CTA converts discovery traffic into pre-paid pickups during slow hours.`,
-    projectedLift: "+22% of discovery traffic captured",
-    effort: "medium",
-    confidence: 0.71,
-    buildable: true,
-  });
-
-  recs.push({
-    id: "rec-tiktok",
-    type: "tiktok",
-    title: "Afternoon 'fresh bake drop' TikTok series",
-    rationale: `Your closest competitor credits TikTok for foot traffic. A recurring 15s 'drop' video posted at 1pm advertises the afternoon window and gives locals a reason to come back after lunch.`,
-    projectedLift: "+30% new-visitor intent (competitor benchmark)",
-    effort: "medium",
-    confidence: 0.64,
-    buildable: true,
-  });
-
-  return recs;
+// Fallback narrative built only from the facts (no model).
+function baseline(f: Facts) {
+  const nb = f.busiestNeighbor;
+  const headline = f.rank ? `${f.name} ranks ${f.rank}` : `${f.name}: what the data shows`;
+  const summary = [
+    nb && f.reviewsPerMonth
+      ? `${f.name} gets ${f.reviewsPerMonth} new Google reviews a month; ${nb.name}, ${nb.metersAway} m away, gets ${nb.reviewsPerMonth}.`
+      : `${f.name} is rated ${f.rating} from ${f.reviewCount} reviews.`,
+    f.quietestWindow
+      ? `Its quietest open stretch is ${f.quietestWindow.label} (${f.quietestWindow.busynessOutOf100}/100; second source ${f.quietestWindow.secondSource}).`
+      : "Popular-times data is unavailable.",
+    f.roomToGrowIfQuietestWindowReachedItsDaysAverage
+      ? `At the estimated visit volume, lifting that window to its day's average is worth about ${f.roomToGrowIfQuietestWindowReachedItsDaysAverage.extraVisitsPerWeek.base} visits a week.`
+      : "",
+  ].join(" ").trim();
+  const recommendations = [
+    {
+      id: "rec-poster",
+      type: "poster",
+      title: "Put a \"nearby\" poster in front of passersby",
+      rationale: nb
+        ? `${nb.name}, ${nb.metersAway} m away, collects ${nb.reviewsPerMonth} reviews a month against ${f.reviewsPerMonth}; a street-level poster reaches the people already walking by.`
+        : "A street-level poster reaches the people already walking by.",
+    },
+    {
+      id: "rec-gbp",
+      type: "google_business",
+      title: "Refresh the Google Business profile from verified facts",
+      rationale: `The profile is where searchers see the ${f.rating} rating, hours and amenities; keep it accurate and answer the low-rated reviews.`,
+    },
+  ];
+  return { headline, summary, recommendations };
 }
 
-// ---------------- LLM enrichment (optional, upgrades the above) ----------------
+const SYSTEM = `You are Venice's analyst for a local bakery. Use ONLY the facts JSON. Return ONLY JSON:
+{"headline": string, "summary": string (2-3 sentences), "recommendations": [{"id": string, "type": "poster"|"google_business"|"website"|"tiktok", "title": string, "rationale": string}]} with 2-4 recommendations.
+Rules: every number you write must appear verbatim in the facts; never compute new numbers, percentages, revenue, lifts or conversion rates; never state anything about the business, its neighborhood, tourists, competitors or customers that is not in the facts. Web tactics are ideas only, never statistics. Say what is unknown (for example salesData) instead of guessing. Lead with the biggest evidenced gap (nearby peers, quiet window) and say if the second source disagrees about the quiet window.`;
 
-const SYSTEM = `You are FootfallAI, a growth strategist for local bakeries. You receive hard metrics (foot-traffic by hour, sales, reviews) and must return ONLY compact JSON matching:
-{"headline": string, "summary": string (2-3 sentences, specific numbers),
- "recommendations": [{"id": string, "type": "poster"|"google_business"|"website"|"tiktok"|"ops",
-   "title": string, "rationale": string (cite the data), "projectedLift": string,
-   "effort": "low"|"medium"|"high", "confidence": number 0-1, "buildable": boolean}]}
-Prioritize the single biggest revenue opportunity first. Be concrete, reference the actual dead hours and ticket size. 4-5 recommendations. Mark poster/google_business/website/tiktok as buildable:true.`;
+// Numbers in a text, with thousands separators ("1,719") joined but list commas ("[3,15]") not.
+const nums = (t: string) => (t.match(/\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?/g) ?? []).map((n) => n.replace(/,/g, ""));
 
 export async function analyzeBakery(bakery: Bakery): Promise<Analysis> {
-  const m = computeMetrics(bakery);
-  const sentiment = sentimentFromReviews(bakery);
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  const model = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
-
-  // Live web grounding via Context.dev (empty + harmless when no key).
+  const facts = analysisFacts(bakery);
   const research = await researchTactics(bakery.name);
-  const sources = research.map((r) => ({ url: r.url, title: r.title }));
+  const allowed = new Set(nums(JSON.stringify(facts, null, 1)));
+  type Out = { headline: string; summary: string; recommendations: (Recommendation & { rationale: string })[] };
+  const user = JSON.stringify({ facts, webTacticIdeas: research.map((r) => `${r.title}: ${r.description}`) });
 
-  let headline = `${bakery.name} is leaving money on the table every afternoon`;
-  let summary = `Weekday foot traffic peaks in the morning (${m.peakHours.join(", ") || "8–10am"}) then falls to roughly ${Math.round(
-    m.avgBusy * 0.4
-  )}/100 during ${m.deadHours.join(", ") || "the afternoon"}. Weekly revenue is about $${m.weeklyRevenue.toLocaleString()} at a $${m.avgTicket.toFixed(
-    2
-  )} average ticket. The afternoon lull is the clearest growth lever.`;
-  let recommendations = baselineRecommendations(bakery, m);
-  let usedModel = "FootfallAI analytics (deterministic)";
-
-  if (apiKey) {
-    try {
-      const client = new Anthropic({ apiKey });
-      const payload = {
-        name: bakery.name,
-        rating: bakery.rating,
-        reviewCount: bakery.reviewCount,
-        peakHours: m.peakHours,
-        deadHours: m.deadHours,
-        avgBusyness: m.avgBusy,
-        weeklyRevenue: m.weeklyRevenue,
-        avgTicket: m.avgTicket,
-        positiveReviews: sentiment.positive,
-        negativeReviews: sentiment.negative,
-        competitorNames: bakery.competitorNames,
-        liveWebTactics: research.map((r) => `${r.title}: ${r.description}`),
-      };
-      const resp = await client.messages.create({
-        model,
-        max_tokens: 1500,
-        system: SYSTEM,
-        messages: [{ role: "user", content: JSON.stringify(payload) }],
-      });
-      const text = resp.content.map((c) => (c.type === "text" ? c.text : "")).join("");
-      const json = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
-      if (json.headline) headline = json.headline;
-      if (json.summary) summary = json.summary;
-      if (Array.isArray(json.recommendations) && json.recommendations.length) {
-        recommendations = json.recommendations;
-      }
-      usedModel = model;
-    } catch (e) {
-      // keep deterministic baseline on any failure
-      usedModel = "FootfallAI analytics (LLM fallback)";
-    }
+  // Reject any output that states a number not in the facts; retry once, then fall back.
+  let out: Out | null = await llmJson<Out | null>(SYSTEM, user, null);
+  const unsupported = (o: Out | null) => (o ? nums(JSON.stringify(o)).filter((n) => !allowed.has(n)) : ["no output"]);
+  let bad = unsupported(out);
+  if (bad.length) {
+    out = await llmJson<Out | null>(SYSTEM, `${user}\n\nYour previous answer used numbers that are not in the facts: ${bad.join(", ")}. Rewrite without them.`, null);
+    bad = unsupported(out);
   }
+  const ok = !!out && !bad.length && Array.isArray(out.recommendations) && out.recommendations.length > 0;
+  const text = ok ? out! : baseline(facts);
 
   return {
     bakeryId: bakery.id,
-    headline,
-    summary,
-    deadHours: m.deadHours,
-    peakHours: m.peakHours,
-    weeklyRevenue: m.weeklyRevenue,
-    avgTicket: m.avgTicket,
-    sentiment,
-    recommendations,
-    sources,
+    headline: text.headline,
+    summary: text.summary,
+    sentiment: sentimentFromReviews(bakery),
+    recommendations: (text.recommendations as Recommendation[]).map((r) => ({
+      ...r,
+      effort: EFFORT[r.type] ?? "medium",
+      buildable: r.type in EFFORT,
+    })),
+    sources: research.map((r) => ({ url: r.url, title: r.title })),
     generatedAt: new Date().toISOString(),
-    model: usedModel,
+    model: ok ? process.env.ANTHROPIC_MODEL || "claude-opus-4-8" : "Venice analytics (facts only)",
   };
 }

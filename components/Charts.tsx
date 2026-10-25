@@ -1,82 +1,59 @@
 "use client";
 
-import type { Bakery, SalesPoint } from "@/lib/types";
+import type { Bakery } from "@/lib/types";
+import { cohort, deadWindow } from "@/lib/traffic";
 
-// Average weekday busyness by hour, rendered as SVG bars with the dead window flagged.
+// Day x hour heatmap of popular times (darker = busier), with the emptiest 3 hours outlined.
 export function PopularTimesChart({ bakery }: { bakery: Bakery }) {
-  const weekday = ["Mon", "Tue", "Wed", "Thu", "Fri"];
-  const byHour: { hour: number; v: number }[] = [];
-  for (let h = 7; h <= 19; h++) {
-    let total = 0;
-    let n = 0;
-    for (const d of bakery.popularTimes) {
-      if (!weekday.includes(d.day)) continue;
-      const hp = d.hours.find((x) => x.hour === h);
-      if (hp) {
-        total += hp.busyness;
-        n++;
-      }
-    }
-    byHour.push({ hour: h, v: n ? Math.round(total / n) : 0 });
-  }
-  const max = Math.max(1, ...byHour.map((x) => x.v));
-  const avg = byHour.reduce((a, x) => a + x.v, 0) / byHour.length;
-  const W = 560;
-  const H = 180;
-  const bw = W / byHour.length;
-
-  function label(h: number) {
-    const ap = h >= 12 ? "p" : "a";
-    const hr = h % 12 === 0 ? 12 : h % 12;
-    return `${hr}${ap}`;
-  }
+  const dead = deadWindow(bakery);
+  const hours = Array.from({ length: 13 }, (_, i) => i + 7);
+  const L = 34;
+  const cw = (560 - L) / hours.length;
+  const rh = 22;
+  const label = (h: number) => `${h % 12 || 12}${h >= 12 ? "p" : "a"}`;
 
   return (
-    <svg viewBox={`0 0 ${W} ${H + 24}`} className="w-full">
-      {byHour.map((x, i) => {
-        const bh = (x.v / max) * H;
-        const dead = x.v > 0 && x.v <= Math.max(10, avg * 0.45);
-        return (
-          <g key={x.hour}>
-            <rect
-              x={i * bw + 3}
-              y={H - bh}
-              width={bw - 6}
-              height={bh}
-              rx={4}
-              fill={dead ? "#b4455f" : "#c97b3c"}
-              opacity={dead ? 0.95 : 0.85}
-            />
-            <text x={i * bw + bw / 2} y={H + 16} textAnchor="middle" fontSize="10" fill="#2a1a12" opacity="0.5">
-              {label(x.hour)}
-            </text>
-          </g>
-        );
-      })}
-      <line x1={0} y1={H - (avg / max) * H} x2={W} y2={H - (avg / max) * H} stroke="#6b8f71" strokeDasharray="4 4" />
+    <svg viewBox={`0 0 560 ${bakery.popularTimes.length * rh + 34}`} className="w-full">
+      {hours.map((h, i) => (
+        <text key={h} x={L + i * cw + cw / 2} y={10} textAnchor="middle" fontSize="9" fill="#2a1a12" opacity="0.5">
+          {label(h)}
+        </text>
+      ))}
+      {bakery.popularTimes.map((d, r) => (
+        <g key={d.day}>
+          <text x={0} y={22 + r * rh + 12} fontSize="10" fill="#2a1a12" opacity="0.6">{d.day}</text>
+          {hours.map((h, i) => {
+            const v = d.hours.find((x) => x.hour === h)?.busyness ?? 0;
+            const isDead = dead && dead.day === d.day && h >= dead.start && h < dead.start + 3;
+            return (
+              <rect key={h} x={L + i * cw + 1} y={18 + r * rh} width={cw - 2} height={rh - 2} rx={3} fill="#c97b3c"
+                opacity={v ? 0.12 + 0.88 * (v / 100) : 0.04} stroke={isDead ? "#b4455f" : "none"} strokeWidth={2}>
+                <title>{`${d.day} ${label(h)}: ${v}/100`}</title>
+              </rect>
+            );
+          })}
+        </g>
+      ))}
+      <text x={L} y={bakery.popularTimes.length * rh + 30} fontSize="9" fill="#2a1a12" opacity="0.5">
+        darker = busier · outlined = emptiest 3 open hours
+      </text>
     </svg>
   );
 }
 
-export function SalesChart({ sales }: { sales: SalesPoint[] }) {
-  const data = sales.slice(-30);
-  const max = Math.max(1, ...data.map((d) => d.revenue));
-  const W = 560;
-  const H = 160;
-  const step = W / Math.max(1, data.length - 1);
-  const pts = data.map((d, i) => `${i * step},${H - (d.revenue / max) * H}`).join(" ");
-  const area = `0,${H} ${pts} ${W},${H}`;
-
+// Reviews per month for this bakery vs its nearest peers (falls back to lifetime reviews).
+export function PeerChart({ bakery }: { bakery: Bakery }) {
+  const rows = cohort(bakery).map((p, i) => ({ name: p.name, v: p.reviewsPerMonth ?? p.reviewCount, self: i === 0 }));
+  const max = Math.max(1, ...rows.map((r) => r.v));
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
-      <defs>
-        <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#f4c04e" stopOpacity="0.5" />
-          <stop offset="100%" stopColor="#f4c04e" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <polygon points={area} fill="url(#g)" />
-      <polyline points={pts} fill="none" stroke="#c97b3c" strokeWidth="2.5" />
+    <svg viewBox={`0 0 560 ${rows.length * 34}`} className="w-full">
+      {rows.map((r, i) => (
+        <g key={r.name}>
+          <text x={0} y={i * 34 + 14} fontSize="11" fill="#2a1a12" opacity="0.7">{r.name.slice(0, 34)}</text>
+          <rect x={0} y={i * 34 + 19} width={(r.v / max) * 520} height={9} rx={4} fill={r.self ? "#b4455f" : "#c97b3c"} opacity={r.self ? 0.95 : 0.7} />
+          <text x={(r.v / max) * 520 + 6} y={i * 34 + 28} fontSize="10" fill="#2a1a12" opacity="0.6">{r.v}</text>
+        </g>
+      ))}
     </svg>
   );
 }

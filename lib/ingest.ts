@@ -1,123 +1,81 @@
-import type { Bakery, DayTraffic, HourPoint, SalesPoint } from "./types";
+import type { Bakery } from "./types";
+import { brandOf, mapsListing, pageMarkdown } from "./context";
+import { apifyPlaces } from "./apify";
+import { bestTime } from "./besttime";
+import { llmJson } from "./llm";
+import { counterPrices } from "./traffic";
 
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-function slugify(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "bakery";
+// name + a short hash of the address, so two same-named bakeries never collide.
+export function bakeryId(name: string, address: string): string {
+  let h = 5381;
+  for (const c of address.toLowerCase().replace(/[^a-z0-9]/g, "")) h = (h * 33) ^ c.charCodeAt(0);
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "bakery";
+  return `${slug}-${(h >>> 0).toString(36).slice(0, 5)}`;
 }
 
-// Deterministic pseudo-random from a string, so the same bakery name always
-// yields the same profile (stable demos, no flicker on re-entry).
-function seededRand(seed: string): () => number {
-  let h = 2166136261;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return () => {
-    h += 0x6d2b79f5;
-    let t = Math.imul(h ^ (h >>> 15), 1 | h);
-    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+// Business site -> its online-ordering page (or the site itself when the menu is on it) -> menu items with prices.
+const ORDER_LINK = /\]\((https?:\/\/[^)\s]*(?:gloriafood|toasttab|square\.site|chownow|clover\.com|order\.online)[^)\s]*)\)/i;
+async function ingestMenu(site: string): Promise<{ menu: NonNullable<Bakery["menu"]>; orderUrl?: string }> {
+  const home = await pageMarkdown(site);
+  const orderUrl = home.match(ORDER_LINK)?.[1];
+  const page = orderUrl ? await pageMarkdown(orderUrl) : home;
+  if (!/\$\s?\d|\d\.\d{2}/.test(page)) return { menu: [], orderUrl };
+  const { items } = await llmJson<{ items: [string, string, number][] }>(
+    `Extract every menu item with a price from this page. Return minified JSON {"items":[[category,name,price],...]} with price as a USD number (the base price if several are listed). Skip customer orders.`,
+    page.slice(0, 60000),
+    { items: [] }
+  );
+  return {
+    orderUrl,
+    menu: items.filter((i) => typeof i[2] === "number").map(([category, name, price]) => ({ category, name, price })),
   };
 }
 
-function genProfile(name: string, address: string): Bakery {
-  const rnd = seededRand(name + address);
-  const morningPeak = 70 + Math.floor(rnd() * 20);
-  const afternoonDip = 18 + Math.floor(rnd() * 25); // the lever
-  const eveningBump = Math.floor(rnd() * 25);
-
-  const popularTimes: DayTraffic[] = DAYS.map((d) => {
-    const weekend = d === "Sat" || d === "Sun";
-    const hours: HourPoint[] = [];
-    for (let h = 0; h < 24; h++) {
-      let b = 0;
-      if (h >= 7 && h <= 19) {
-        const morning = Math.max(0, 1 - Math.abs(h - 8.5) / 3) * (weekend ? morningPeak - 10 : morningPeak);
-        const lunch = Math.max(0, 1 - Math.abs(h - 12.5) / 2) * 46;
-        const afternoon = Math.max(0, 1 - Math.abs(h - 15.5) / 3) * afternoonDip;
-        const evening = Math.max(0, 1 - Math.abs(h - 17.5) / 2) * eveningBump;
-        b = Math.min(100, Math.round(morning + lunch + afternoon + evening));
-      }
-      hours.push({ hour: h, busyness: b });
-    }
-    return { day: d, hours };
-  });
-
-  const base = 1200 + Math.floor(rnd() * 1400);
-  const sales: SalesPoint[] = [];
-  const now = new Date("2026-10-23T00:00:00Z");
-  for (let i = 29; i >= 0; i--) {
-    const d = new Date(now);
-    d.setUTCDate(now.getUTCDate() - i);
-    const dow = d.getUTCDay();
-    const weekend = dow === 0 || dow === 6;
-    const revenue = Math.round(base * (weekend ? 1.25 : 1) * (0.85 + rnd() * 0.3));
-    sales.push({ date: d.toISOString().slice(0, 10), revenue, transactions: Math.round(revenue / 8) });
+async function ingestBrand(site?: string): Promise<Bakery["brand"]> {
+  if (!site) return undefined;
+  try {
+    const b = await brandOf(new URL(site).hostname.replace(/^www\./, ""));
+    return b.palette && { palette: b.palette, font: b.font };
+  } catch {
+    return undefined;
   }
+}
+
+// Live data only: Google place + popular times + dated reviews + peers (Apify), a BestTime
+// cross-check, the Maps listing (Context.dev) when Apify is unavailable, and the menu + brand
+// from the business's own site. Anything unavailable stays empty, never generated.
+export async function ingestBakery(name: string, address: string): Promise<Bakery> {
+  const [g, alt] = await Promise.all([apifyPlaces(name, address), bestTime(name, address)]);
+  const place = g.self ?? (await mapsListing(name, address));
+  if (!place) throw new Error("No live Google Maps listing found (check APIFY_TOKEN / CONTEXT_DEV_API_KEY and the name/address).");
+  const [{ menu, orderUrl }, brand] = await Promise.all([
+    place.website ? ingestMenu(place.website) : { menu: [] as NonNullable<Bakery["menu"]>, orderUrl: undefined },
+    ingestBrand(place.website),
+  ]);
+  const times = g.self?.popularTimes ?? [];
+  const prices = counterPrices(menu);
 
   return {
-    id: slugify(name),
+    id: bakeryId(name, address),
     name,
     address,
-    rating: Math.round((4.1 + rnd() * 0.7) * 10) / 10,
-    reviewCount: 60 + Math.floor(rnd() * 800),
-    priceLevel: 2,
-    categories: ["Bakery", "Coffee", "Pastries"],
-    source: "seed",
-    popularTimes,
-    sales,
-    reviews: [
-      { author: "Local Guide", rating: 5, text: "Fresh pastries, friendly staff, great morning spot.", date: "2026-10-16" },
-      { author: "Visitor", rating: 3, text: "Quiet in the afternoon, limited selection later in the day.", date: "2026-10-04" },
-    ],
+    rating: place.rating,
+    reviewCount: place.reviewCount,
+    categories: [place.category],
+    website: place.website,
+    location: g.self && { lat: g.self.lat, lng: g.self.lng },
+    orderUrl,
+    hours: g.self?.hours,
+    attributes: g.self?.attributes,
+    brand,
+    popularTimes: times.length ? times : alt,
+    popularTimesAlt: times.length ? alt : [],
+    reviews: place.reviews,
+    reviewsPerMonth: g.self?.reviewsPerMonth,
+    peers: g.peers,
+    menu,
+    avgTicket: prices.length ? Math.round((prices.reduce((a, x) => a + x, 0) / prices.length) * 100) / 100 : undefined,
+    reviewTags: g.self?.tags,
+    updatedAt: new Date().toISOString(),
   };
-}
-
-// Attempt a live Google Maps popular-times scrape via Firecrawl, else generate.
-export async function ingestBakery(name: string, address: string): Promise<Bakery> {
-  const key = process.env.FIRECRAWL_API_KEY;
-  const profile = genProfile(name, address);
-
-  if (key) {
-    try {
-      const q = encodeURIComponent(`${name} ${address}`);
-      const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          url: `https://www.google.com/maps/search/${q}`,
-          formats: ["json"],
-          jsonOptions: {
-            prompt:
-              "Extract the bakery's rating (number), total review count (number), price level (1-4), and up to 4 recent review snippets with author, rating, and text. Return JSON.",
-          },
-          onlyMainContent: true,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const j = data?.data?.json ?? data?.json;
-        if (j) {
-          if (typeof j.rating === "number") profile.rating = j.rating;
-          if (typeof j.reviewCount === "number") profile.reviewCount = j.reviewCount;
-          if (typeof j.priceLevel === "number") profile.priceLevel = j.priceLevel;
-          if (Array.isArray(j.reviews) && j.reviews.length) {
-            profile.reviews = j.reviews.slice(0, 4).map((r: any) => ({
-              author: r.author || "Reviewer",
-              rating: Number(r.rating) || 4,
-              text: String(r.text || ""),
-              date: r.date || "2026-10-01",
-            }));
-          }
-          profile.source = "live";
-        }
-      }
-    } catch {
-      // fall through to generated profile
-    }
-  }
-
-  return profile;
 }

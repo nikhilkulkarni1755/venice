@@ -37,7 +37,7 @@ export default async function Preorder({
           </div>
         </>
       )}
-      <a href="/" className="btn-ghost mt-8">← Back to FootfallAI</a>
+      <a href="/" className="btn-ghost mt-8">← Back to Venice</a>
     </main>
   );
 }

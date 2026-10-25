@@ -23,3 +23,13 @@ create table if not exists assets (
 );
 
 create index if not exists assets_bakery_idx on assets (bakery_id);
+
+-- One row per (re)ingest: review counts + peers over time (feeds velocity validation).
+create table if not exists snapshots (
+  id          bigserial primary key,
+  bakery_id   text not null,
+  taken_at    timestamptz default now(),
+  data        jsonb not null
+);
+
+create index if not exists snapshots_bakery_idx on snapshots (bakery_id, taken_at);

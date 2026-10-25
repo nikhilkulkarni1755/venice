@@ -32,14 +32,15 @@ export default function Home() {
     const j = await r.json();
     setLoading(false);
     if (j.bakery) window.location.href = `/b/${j.bakery.id}`;
+    else alert(j.error);
   }
 
   return (
     <main className="mx-auto max-w-5xl px-5 py-10">
       <header className="mb-10">
-        <div className="pill bg-butter/30 text-caramel mb-4">🥐 FootfallAI</div>
+        <div className="pill bg-butter/30 text-caramel mb-4">🥐 Venice</div>
         <h1 className="font-display text-5xl leading-tight text-crust">
-          Fill your bakery&apos;s <span className="text-berry">empty hours.</span>
+          Let&apos;s get your bakery more <span className="text-berry">foot traffic!</span>
         </h1>
         <p className="mt-4 max-w-2xl text-lg text-crust/70">
           An agent that reads your Google foot-traffic &amp; sales, finds where you&apos;re losing money, and
@@ -72,10 +73,9 @@ export default function Home() {
         </div>
 
         <div className="card p-6">
-          <h2 className="mb-1 font-display text-2xl text-crust">Or start from a demo</h2>
+          <h2 className="mb-1 font-display text-2xl text-crust">Your bakeries</h2>
           <p className="mb-4 text-sm text-crust/60">
-            Fully loaded with real popular-times + sales data.{" "}
-            <span className="pill bg-sage/15 text-sage">storage: {mode || "…"}</span>
+            Live data only. <span className="pill bg-sage/15 text-sage">storage: {mode || "…"}</span>
           </p>
           <div className="space-y-2">
             {bakeries.map((b) => (
@@ -94,7 +94,7 @@ export default function Home() {
                 </div>
               </a>
             ))}
-            {!bakeries.length && <div className="text-sm text-crust/50">Loading demos…</div>}
+            {!bakeries.length && <div className="text-sm text-crust/50">No bakeries yet. Add one on the left.</div>}
           </div>
         </div>
       </section>

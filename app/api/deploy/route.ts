@@ -8,7 +8,7 @@ export const maxDuration = 90;
 
 export async function POST(req: NextRequest) {
   const { assetId, bakeryId } = await req.json();
-  const asset = await getAsset(assetId);
+  const asset = await getAsset(assetId, bakeryId);
   if (!asset || asset.kind !== "website") {
     return NextResponse.json({ error: "website asset not found" }, { status: 404 });
   }
@@ -21,9 +21,9 @@ export async function POST(req: NextRequest) {
   // Fallback: serve the site from our own app (public once behind the tunnel).
   const base = process.env.NEXT_PUBLIC_BASE_URL || "";
   const url = freestyleUrl || `${base}/site/${bakeryId}`;
-  const provider = freestyleUrl ? "Freestyle" : "FootfallAI hosted";
+  const provider = freestyleUrl ? "Freestyle" : "Venice hosted";
 
-  await patchAssetData(assetId, { deployUrl: url, deployProvider: provider });
+  await patchAssetData(assetId, bakeryId, { deployUrl: url, deployProvider: provider });
   await logAgentRun(bakeryId, `deploy:done (${provider}) ${url}`);
 
   return NextResponse.json({ url, provider });

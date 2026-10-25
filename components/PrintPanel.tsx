@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 type Shop = { name: string; address?: string; email?: string; phone?: string; website?: string; distance?: string };
-type Job = { shops: Shop[]; pdfBase64: string; filename: string; draft: { subject: string; body: string }; note: string };
+type Job = { poster: { data: { svg: string; images?: (string | null)[] } }; shops: Shop[]; pdfBase64: string; filename: string; draft: { subject: string; body: string }; note: string };
 
 function downloadPdf(base64: string, filename: string) {
   const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
@@ -15,7 +15,7 @@ function downloadPdf(base64: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-export function PrintPanel({ bakeryId }: { bakeryId: string }) {
+export function PrintPanel({ bakeryId, onDesigned }: { bakeryId: string; onDesigned: () => void }) {
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -28,7 +28,10 @@ export function PrintPanel({ bakeryId }: { bakeryId: string }) {
     });
     const j = await r.json();
     setLoading(false);
-    if (j.shops) setJob(j);
+    if (j.shops) {
+      setJob(j);
+      onDesigned();
+    }
   }
 
   function sendOrder(shop: Shop) {
@@ -45,21 +48,32 @@ export function PrintPanel({ bakeryId }: { bakeryId: string }) {
     <section className="card mt-4 p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="font-display text-2xl text-crust">Print &amp; distribute</h2>
-          <p className="text-sm text-crust/55">Find the nearest FedEx Office and send a color print order for your poster.</p>
+          <h2 className="font-display text-2xl text-crust">Design &amp; print poster</h2>
+          <p className="text-sm text-crust/55">
+            Designs a poster from your verified data and website colors, then finds the nearest FedEx Office for a color print order.
+          </p>
         </div>
-        <button className="btn-primary" onClick={prepare} disabled={loading}>
-          {loading ? "Locating store…" : job ? "Refresh" : "Find FedEx Office →"}
+        <button id="print-run" className="btn-primary" onClick={prepare} disabled={loading}>
+          {loading ? "Designing…" : job ? "Redesign" : "Design & print →"}
         </button>
       </div>
 
       {job && (
         <div className="mt-4">
+          <div
+            className="mx-auto mb-4 max-w-[260px] overflow-hidden rounded-lg shadow [&>svg]:h-auto [&>svg]:w-full"
+            dangerouslySetInnerHTML={{ __html: job.poster.data.svg }}
+          />
+          {job.poster.data.images?.some(Boolean) && (
+            <p className="mb-3 text-center text-xs text-crust/50">
+              Dish images are AI-generated illustrations, not photos of the bakery&apos;s own products.
+            </p>
+          )}
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <button className="btn-ghost !py-1.5 !text-xs" onClick={() => downloadPdf(job.pdfBase64, job.filename)}>
               ⬇ Print-ready PDF
             </button>
-            <span className="pill bg-butter/25 text-caramel">25 copies · 13×19 · full color</span>
+            <span className="pill bg-butter/25 text-caramel">1 copy · 8.5×11 · full color</span>
           </div>
 
           <div className="space-y-2">
